@@ -354,6 +354,43 @@ async def test_create_video_no_resolution_rule_passes_through(client):
     assert r.status_code == 202
 
 
+async def test_create_video_auto_fills_seed(client):
+    """wf-aaa declares `seed` but the client doesn't send it → gateway
+    injects a random seed within AutoDL's range."""
+
+    r = await client.post(
+        "/v1/videos",
+        headers={"Authorization": "Bearer raw-token"},
+        json={"model": "wf-aaa", "prompt": "auto-seed", "size": "480p横"},
+    )
+    assert r.status_code == 202
+    submit = next(
+        c for c in UPSTREAM_CALLS
+        if c[0] == "POST" and "/comfyui_workflow/wf-aaa" in c[1]
+        and c[2] and c[2].get("prompt") == "auto-seed"
+    )
+    seed = submit[2].get("seed")
+    assert isinstance(seed, int)
+    assert 1 <= seed <= 999_999_999_999_999
+
+
+async def test_create_video_client_seed_preserved(client):
+    """When the client sends an explicit seed, it is not overwritten."""
+
+    r = await client.post(
+        "/v1/videos",
+        headers={"Authorization": "Bearer raw-token"},
+        json={"model": "wf-aaa", "prompt": "explicit-seed", "seed": 42, "size": "480p横"},
+    )
+    assert r.status_code == 202
+    submit = next(
+        c for c in UPSTREAM_CALLS
+        if c[0] == "POST" and "/comfyui_workflow/wf-aaa" in c[1]
+        and c[2] and c[2].get("prompt") == "explicit-seed"
+    )
+    assert submit[2]["seed"] == 42
+
+
 async def test_create_video_explicit_resolution_wins(client):
     """If client passes both size and resolution, explicit resolution wins
     (current behavior), but the validation still runs on the effective value.

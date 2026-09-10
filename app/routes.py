@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 
 from fastapi import APIRouter, Request
@@ -33,6 +34,12 @@ def _upstream(request: Request) -> UpstreamClient:
 
 def _cache(request: Request) -> WorkflowCache:
     return request.app.state.cache
+
+
+def _random_seed() -> int:
+    """Return a random seed within AutoDL's declared integer range."""
+
+    return random.randint(1, 999_999_999_999_999)
 
 
 async def _ensure_cache_warm(request: Request, token: str) -> None:
@@ -173,6 +180,16 @@ async def create_video(request: Request) -> JSONResponse:
     # upstream integer/float types.
     if entry and entry.field_types:
         coerce_field_types(upstream_body, entry.field_types)
+
+    # Auto-fill a random seed when the workflow declares one but the client
+    # didn't supply it. Without this, AutoDL reuses its fixed default seed
+    # and identical prompts yield identical output.
+    if (
+        entry
+        and "seed" in entry.input_fields
+        and "seed" not in upstream_body
+    ):
+        upstream_body["seed"] = _random_seed()
 
     submitted = await _upstream(request).submit(
         token,

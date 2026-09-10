@@ -36,6 +36,8 @@ schema. The cache holds:
 * legal `resolution` labels (for `size` validation – e.g.
   `["480p横", "480p竖", "768p横", "768p竖", "480p(1:1)", "768p(1:1)"]`)
 * required input fields (e.g. `["prompt", "ref_image_0"]`)
+* the full accepted field list + field types (for whitelist filtering and
+  type coercion)
 
 When `AUTODL_BOOTSTRAP_TOKEN` is set in the environment, the cache is
 populated eagerly at startup. When unset, the first authenticated
@@ -61,9 +63,25 @@ Missing or malformed Authorization headers → `401`.
 | `model`    | URL path only           | never forwarded                    |
 | `prompt`   | `prompt`                | passed through                     |
 | `seconds`  | `duration`              | only if `duration` not in body     |
-| `size`     | `resolution`            | only if `resolution` not in body   |
+| `size`     | `resolution`            | `"480x480"` → closest label (see below) |
 | `metadata` | merged into top level   | top-level keys win on collision    |
-| anything else | unchanged           | including image URLs / base64      |
+
+The request then passes through a three-step normalization pipeline:
+
+1. **size → resolution mapping** — OpenAI sends `WxH` (e.g. `"480x480"`);
+   AutoDL wants a label (`"480p(1:1)"`, `"736p竖"`…). The gateway derives
+   orientation (square/portrait/landscape) + nearest pixel tier from the
+   cached whitelist, so `"480x480"` → `"480p(1:1)"` on a workflow that
+   offers 480p, or `"736p(1:1)"` on a 736p-only workflow.
+
+2. **whitelist filter** — only fields the workflow's `input_rules`
+   declares are forwarded. Client-side UI fields (`preset`,
+   `resolution_name`, `shotType`, `watermark`, …) are dropped.
+
+3. **type coercion + seed auto-fill** — `integer`/`float` fields are
+   coerced from strings (`"6"` → `6`); if the workflow declares `seed`
+   but the client didn't send one, a random seed is injected so identical
+   prompts don't produce identical output.
 
 ## Status mapping
 
@@ -123,7 +141,8 @@ pytest -q
 ```
 
 The suite is fully offline (uses `httpx.MockTransport`) and covers
-mapping, auth, all four routes, and lifespan-managed client lifecycle.
+mapping, auth, cache validation, all routes, and lifespan-managed client
+lifecycle. **73 test cases** as of v0.3.
 
 ## End-to-end smoke check (against a live gateway)
 
@@ -188,15 +207,16 @@ tokens, no cookies are ever logged.
 
 ```
 app/
-├── main.py           FastAPI app + lifespan + middleware wiring
+├── main.py           FastAPI app + lifespan + CORS + middleware wiring
 ├── settings.py       env-driven Settings dataclass
 ├── auth.py           Bearer-token extraction
 ├── errors.py         typed AppError hierarchy + exception handler
 ├── upstream.py       async AutoDL HTTP client (owns httpx.AsyncClient)
-├── routes.py         4 endpoints + /healthz
+├── cache.py          workflow schema cache (synced at startup)
+├── routes.py         5 endpoints + whitelist filter + seed auto-fill
 ├── mapping.py        pure functions: body mapping, status mapping,
-│                     URL extraction, OpenAI video object builder
-└── logging_config.py JSON formatter + access-log middleware
+│                     URL extraction, size→resolution, type coercion
+└── logging_config.py JSON formatter + rotating file + access log
 deploy/
 ├── autodl-openai-gateway.service   systemd unit (with hardening)
 └── install.sh                       one-shot installer
@@ -204,12 +224,13 @@ scripts/
 └── smoke.sh                         end-to-end curl check
 tests/
 ├── test_auth.py       10 cases
-├── test_mapping.py    23 cases
-└── test_routes.py     11 cases (incl. lifespan + upstream-error)
+├── test_cache.py      7 cases
+├── test_mapping.py    35 cases
+└── test_routes.py     21 cases
 ```
 
-Total runtime dependencies: **3** – `fastapi`, `uvicorn[standard]`,
-`httpx`. No torch, no PIL, no numpy, no requests.
+Total runtime dependencies: **4** – `fastapi`, `uvicorn[standard]`,
+`httpx`, `python-multipart`. No torch, no PIL, no numpy, no requests.
 
 ## Acknowledgements
 
