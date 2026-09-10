@@ -1,0 +1,24 @@
+[Unit]
+Description=AutoDL ComfyUI -> OpenAI Videos gateway
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/autodl-openai-gateway
+Environment="PATH=/opt/autodl-openai-gateway/.venv/bin"
+ExecStart=/opt/autodl-openai-gateway/.venv/bin/python -m app
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+KillSignal=SIGTERM
+
+# Hardening: the gateway only needs outbound HTTPS, no filesystem
+# writes outside the install dir, no new privileges.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/autodl-openai-gateway
+
+[Install]
+WantedBy=multi-user.target
