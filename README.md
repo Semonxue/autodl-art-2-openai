@@ -118,7 +118,37 @@ required to start; everything optional.
 | `LOG_MAX_BYTES`           | `10485760`                                   | max bytes per log file           |
 | `LOG_BACKUP_COUNT`        | `5`                                          | rotated log files to keep        |
 
-## Running locally
+## Quick start
+
+The shortest path from a clean checkout to a running gateway:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m app                       # binds 0.0.0.0:8000
+```
+
+Override anything via environment variables, e.g.:
+
+```bash
+GATEWAY_HOST=127.0.0.1 GATEWAY_PORT=9000 \
+AUTODL_BASE_URL=https://www.autodl.art/api/v1/comfyui \
+AUTODL_BOOTSTRAP_TOKEN=eyJhbGciOi... \
+python -m app
+```
+
+Smoke test the deployment:
+
+```bash
+curl -sS http://localhost:8000/healthz
+# {"status":"ok"}
+```
+
+## Running locally (development loop)
+
+Same commands as above, plus the alternative invocation and a useful
+extra flag for iterative work:
 
 ```bash
 python3 -m venv .venv
@@ -126,8 +156,8 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 python -m app                 # binds 0.0.0.0:8000
-# or:
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+# or, when you want uvicorn's own reload + access log:
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --reload
 ```
 
 Then point any OpenAI-style client at `http://localhost:8000/v1` with
@@ -160,21 +190,223 @@ and prints the picked workflow id + task id.
 # On the VPS, as a sudo-enabled user:
 git clone <repo> autodlart2openai
 cd autodlart2openai
-bash deploy/install.sh
+bash deploy/install.sh           # default: listens on 0.0.0.0:8000
 ```
 
 The installer:
 1. rsyncs the project into `/opt/autodl-openai-gateway`
 2. creates `.venv` and installs requirements
-3. installs the systemd unit and enables it
-4. verifies `/healthz` is reachable on the configured port
+3. writes `/etc/autodl-openai-gateway.env` (only the gateway-related env vars)
+4. installs the systemd unit, which reads that env file via `EnvironmentFile=`
+5. enables + starts the unit
+6. hits `http://127.0.0.1:<port>/healthz` to verify it actually came up
 
-Useful follow-ups:
+### Configuring the port
+
+The gateway reads `GATEWAY_PORT` (default `8000`) and `GATEWAY_HOST`
+(default `0.0.0.0`) at startup. Pick one of two ways to change them:
+
+**A. Pass them when you install** — the installer writes the value into
+`/etc/autodl-openai-gateway.env` and the unit picks it up:
+
+```bash
+GATEWAY_PORT=9000 bash deploy/install.sh
+```
+
+You can combine any of the env vars listed in
+[Configuration](#configuration); they all end up in the env file:
+
+```bash
+GATEWAY_PORT=9000 \
+GATEWAY_HOST=0.0.0.0 \
+AUTODL_BASE_URL=https://www.autodl.art/api/v1/comfyui \
+AUTODL_BOOTSTRAP_TOKEN=eyJhbGciOi... \
+CORS_ORIGINS="https://my-frontend.example.com" \
+bash deploy/install.sh
+```
+
+**B. Edit the env file afterwards** — useful when the service is already
+running and you just want to tweak one knob:
+
+```bash
+sudo $EDITOR /etc/autodl-openai-gateway.env
+# set: GATEWAY_PORT=9000
+sudo systemctl restart autodl-openai-gateway
+curl -sS http://127.0.0.1:9000/healthz
+```
+
+> Notes on ports < 1024 (e.g. 80 / 443): don't set
+> `GATEWAY_PORT=80` directly — the unit has no `CAP_NET_BIND_SERVICE`
+> and runs as root only by accident of install. Either stay above 1024
+> (recommended) or put nginx / Caddy in front.
+
+### Exposing the gateway to the internet
+
+After install, the gateway binds `0.0.0.0:8000` (or whatever
+`GATEWAY_PORT` is). To reach it from outside the VPS:
+
+**1. Firewall — open the port to the world (or just to your IP)**
+
+```bash
+# UFW (Ubuntu/Debian)
+sudo ufw allow 8000/tcp                       # open to everyone
+sudo ufw allow from 1.2.3.4 to any port 8000  # open to one IP only (safer)
+sudo ufw reload
+
+# firewalld (CentOS / RHEL / Fedora)
+sudo firewall-cmd --permanent --add-port=8000/tcp
+sudo firewall-cmd --reload
+```
+
+**2. Cloud security group — also open it**
+
+Most VPS providers (AWS Lightsail, DigitalOcean, Vultr, Aliyun ECS,
+Tencent CVM, …) block inbound traffic by default. In the provider's
+web console, add an inbound rule for the chosen TCP port in the
+instance's security group / firewall. Until you do this, `curl` from
+your laptop will time out even though `curl 127.0.0.1` from inside the
+VPS works.
+
+**3. Public endpoint**
+
+Once the port is open, the gateway's OpenAI-compatible base URL is:
+
+```
+http://<server-public-ip>:8000/v1
+```
+
+Wire any OpenAI-style client to it:
+
+```python
+# Python — openai SDK
+from openai import OpenAI
+client = OpenAI(
+    base_url="http://203.0.113.10:8000/v1",
+    api_key="<your-autodl-comfyui-token>",  # passed through verbatim
+)
+resp = client.videos.generate(model="<any-workflow-id>", prompt="...")
+```
+
+```bash
+# curl
+curl -X POST http://203.0.113.10:8000/v1/videos \
+  -H "Authorization: Bearer <your-autodl-comfyui-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"<workflow-id>","prompt":"a cat in space","size":"480x480"}'
+```
+
+**4. Optional — put it behind a reverse proxy on 443**
+
+For HTTPS / a real domain, front it with nginx or Caddy. Minimal
+Caddyfile (Caddy issues + renews the cert for you):
+
+```caddyfile
+autodl.example.com {
+    reverse_proxy 127.0.0.1:8000
+}
+```
+
+Then the public base URL becomes
+`https://autodl.example.com/v1` and the firewall only needs port
+`443` open.
+
+### Useful follow-ups
+
 ```bash
 sudo systemctl status autodl-openai-gateway
 sudo journalctl -fu autodl-openai-gateway
 sudo systemctl restart autodl-openai-gateway
+
+# What port is it actually on right now?
+sudo systemctl show autodl-openai-gateway -p Environment | tr ' ' '\n' | grep GATEWAY_
+ss -ltnp | grep ':8000'   # or whatever GATEWAY_PORT is
 ```
+
+## Running on a cloud server (keep it alive)
+
+If you're not using systemd — or you're on a managed host where you
+can't install a service — pick one of the three patterns below. They
+all run the **same command** (`python -m app`); only the supervisor
+around it changes.
+
+### 1. `nohup` + `&` (the simplest persistent process)
+
+```bash
+# One-time setup on the server
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Launch detached; output -> logs/gateway.log, PID -> gateway.pid
+mkdir -p logs
+nohup python -m app >> logs/gateway.log 2>&1 &
+echo $! > gateway.pid
+
+# Later: check / stop / restart
+cat gateway.pid                           # current PID
+kill -TERM "$(cat gateway.pid)"           # graceful stop
+tail -f logs/gateway.log                  # follow logs
+nohup python -m app >> logs/gateway.log 2>&1 & echo $! > gateway.pid   # restart
+```
+
+`nohup` ignores `SIGHUP` (so logging out doesn't kill it) and the
+trailing `&` puts it in the background. This survives your SSH session
+closing; it does **not** survive a server reboot — combine it with a
+`@reboot` cron entry if you need that:
+
+```bash
+(crontab -l 2>/dev/null; echo "@reboot cd /opt/autodl-openai-gateway && source .venv/bin/activate && nohup python -m app >> logs/gateway.log 2>&1 & echo \$! > gateway.pid") | crontab -
+```
+
+### 2. `screen` (interactive sessions you can re-attach)
+
+```bash
+# Install once (Debian/Ubuntu)
+sudo apt-get install -y screen
+
+# Start a named session and run the gateway inside it
+screen -S autodl-gateway
+source .venv/bin/activate
+python -m app
+# Detach: Ctrl-A then d
+
+# Re-attach from any later SSH login
+screen -r autodl-gateway
+
+# List / kill
+screen -ls
+screen -X -S autodl-gateway quit
+```
+
+### 3. `tmux` (same idea, nicer UX on macOS too)
+
+```bash
+# Install once
+sudo apt-get install -y tmux   # Debian/Ubuntu
+# brew install tmux             # macOS
+
+# Start a detached session running the gateway
+tmux new -d -s autodl-gateway "source .venv/bin/activate && python -m app"
+
+# Attach / detach / kill
+tmux attach -t autodl-gateway        # Ctrl-B then d to detach
+tmux ls
+tmux kill-session -t autodl-gateway
+```
+
+### Which should I pick?
+
+| Supervisor   | Survives SSH logout | Survives reboot | Attach & inspect logs | Best for                                    |
+|--------------|---------------------|-----------------|-----------------------|---------------------------------------------|
+| `nohup &`    | ✅                  | ❌ (add cron)   | `tail -f logs/...`    | plainest "just keep it running"             |
+| `screen`     | ✅                  | ❌              | ✅                    | quick debugging on a remote box             |
+| `tmux`       | ✅                  | ❌              | ✅ (scrollback)       | daily driver; same workflow as on macOS     |
+| systemd unit | ✅                  | ✅              | `journalctl -fu`      | production VPS — preferred if you can sudo  |
+
+For a real production VPS, stick with the systemd unit installed by
+`deploy/install.sh`. Use `nohup` / `screen` / `tmux` only when systemd
+isn't an option (containers, locked-down managed hosts, ephemeral
+instances, …).
 
 ## Observability
 

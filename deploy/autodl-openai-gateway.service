@@ -6,6 +6,11 @@ After=network.target
 Type=simple
 WorkingDirectory=/opt/autodl-openai-gateway
 Environment="PATH=/opt/autodl-openai-gateway/.venv/bin"
+# Forward GATEWAY_* / AUTODL_* / LOG_* / TIMEOUT_* / CORS_ORIGINS / etc.
+# to the process. install.sh writes only the gateway-related variables
+# to this file; the leading "-" makes the file optional so the unit
+# still starts cleanly if the file is absent.
+EnvironmentFile=-/etc/autodl-openai-gateway.env
 ExecStart=/opt/autodl-openai-gateway/.venv/bin/python -m app
 Restart=on-failure
 RestartSec=3
