@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.mapping import (
     build_upstream_body,
     coerce_field_types,
+    expand_multipart_files,
     extract_result_urls,
     map_size_to_resolution,
     map_status,
@@ -313,3 +314,181 @@ def test_coerce_field_types_missing_key_untouched():
     body = {"prompt": "hi"}
     coerce_field_types(body, {"duration": "integer"})
     assert body == {"prompt": "hi"}
+
+
+# ---------------------------------------------------------------- expand_multipart_files
+
+
+def _png_bytes() -> bytes:
+    # 1x1 transparent PNG, smallest valid PNG (~70 bytes).
+    return bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+        "890000000d49444154789c6300010000000500010d0a2db40000000049454e44ae"
+        "426082"
+    )
+
+
+def test_expand_multipart_files_passthrough_without_files():
+    out = expand_multipart_files({"model": "wf", "prompt": "x"})
+    assert out == {"model": "wf", "prompt": "x"}
+
+
+def test_expand_multipart_files_strips_placeholder():
+    out = expand_multipart_files(
+        {
+            "model": "wf",
+            "prompt": "x",
+            "__form_files__": [
+                {
+                    "field": "input_reference[]",
+                    "filename": "a.png",
+                    "content_type": "image/png",
+                    "size": 1,
+                    "data": b"x",
+                }
+            ],
+        }
+    )
+    assert "__form_files__" not in out
+
+
+def test_expand_multipart_files_single_image_becomes_ref_image_0():
+    png = _png_bytes()
+    out = expand_multipart_files(
+        {
+            "model": "wf",
+            "prompt": "x",
+            "__form_files__": [
+                {
+                    "field": "input_reference[]",
+                    "filename": "image.png",
+                    "content_type": "image/png",
+                    "size": len(png),
+                    "data": png,
+                }
+            ],
+        }
+    )
+    assert set(out.keys()) == {"model", "prompt", "ref_image_0"}
+    import base64
+
+    expected = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+    assert out["ref_image_0"] == expected
+
+
+def test_expand_multipart_files_multiple_images_numbered_in_order():
+    png_a = _png_bytes()
+    png_b = b"\x89PNG\r\n\x1a\n" + b"second-image-bytes"
+    out = expand_multipart_files(
+        {
+            "model": "wf",
+            "__form_files__": [
+                {
+                    "field": "input_reference[]",
+                    "filename": "a.png",
+                    "content_type": "image/png",
+                    "size": len(png_a),
+                    "data": png_a,
+                },
+                {
+                    "field": "input_reference[]",
+                    "filename": "b.jpg",
+                    "content_type": "image/jpeg",
+                    "size": len(png_b),
+                    "data": png_b,
+                },
+            ],
+        }
+    )
+    import base64
+
+    assert "ref_image_0" in out and "ref_image_1" in out
+    assert out["ref_image_0"].startswith("data:image/png;base64,")
+    assert out["ref_image_1"].startswith("data:image/jpeg;base64,")
+    assert png_a in base64.b64decode(out["ref_image_0"].split(",", 1)[1])
+    assert png_b in base64.b64decode(out["ref_image_1"].split(",", 1)[1])
+
+
+def test_expand_multipart_files_ignores_unrelated_file_fields():
+    """A file with a non-reference field name (e.g. a side-channel
+    attachment) must NOT become a ref_image_<N>. The whitelist filter
+    on the upstream side would drop it anyway, but expander must be
+    defensive too."""
+
+    png = _png_bytes()
+    out = expand_multipart_files(
+        {
+            "__form_files__": [
+                {
+                    "field": "random_other[]",
+                    "filename": "x.png",
+                    "content_type": "image/png",
+                    "size": len(png),
+                    "data": png,
+                }
+            ],
+        }
+    )
+    assert "ref_image_0" not in out
+    assert "__form_files__" not in out
+
+
+def test_expand_multipart_files_accepts_both_field_names():
+    """``input_reference[]`` (browser form) and ``input_reference``
+    (single-file) both count, concatenated in field order."""
+
+    out = expand_multipart_files(
+        {
+            "__form_files__": [
+                {
+                    "field": "input_reference",
+                    "filename": "a.png",
+                    "content_type": "image/png",
+                    "size": 1,
+                    "data": b"A",
+                },
+                {
+                    "field": "input_reference[]",
+                    "filename": "b.png",
+                    "content_type": "image/png",
+                    "size": 1,
+                    "data": b"B",
+                },
+            ],
+        }
+    )
+    assert "ref_image_0" in out and "ref_image_1" in out
+
+
+def test_expand_multipart_files_falls_back_to_png_when_mime_missing():
+    out = expand_multipart_files(
+        {
+            "__form_files__": [
+                {
+                    "field": "input_reference[]",
+                    "filename": "noext",
+                    "content_type": None,
+                    "size": 1,
+                    "data": b"\x89",
+                }
+            ],
+        }
+    )
+    assert out["ref_image_0"].startswith("data:image/png;base64,")
+
+
+def test_expand_multipart_files_skips_empty_data():
+    out = expand_multipart_files(
+        {
+            "__form_files__": [
+                {
+                    "field": "input_reference[]",
+                    "filename": "empty.png",
+                    "content_type": "image/png",
+                    "size": 0,
+                    "data": b"",
+                }
+            ],
+        }
+    )
+    assert "ref_image_0" not in out

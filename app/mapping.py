@@ -7,6 +7,7 @@ both the request and the test fixtures.
 
 from __future__ import annotations
 
+import base64
 from typing import Any, Mapping
 
 
@@ -74,6 +75,70 @@ def build_upstream_body(body: Mapping[str, Any]) -> dict[str, Any]:
         upstream[key] = value
 
     return upstream
+
+
+# Names of multipart form fields that carry reference images. The list
+# is short and explicit on purpose — we don't want to ingest every
+# upload, only the ones the upstream workflow actually consumes.
+_REFERENCE_FILE_FIELDS = ("input_reference[]", "input_reference")
+
+
+def expand_multipart_files(body: Mapping[str, Any]) -> dict[str, Any]:
+    """Replace the synthetic ``__form_files__`` placeholder with
+    ``ref_image_<N>`` data URLs, ready to forward upstream.
+
+    The frontend uploads reference images as multipart file fields
+    named ``input_reference[]`` (or, for compatibility, ``input_reference``).
+    The upstream ComfyUI workflow expects each reference image as a
+    distinct field named ``ref_image_0``, ``ref_image_1``, ... — both
+    plain URLs and ``data:image/...;base64,...`` URLs are accepted.
+
+    Mapping rules:
+
+    * The order is the order the files appeared in the multipart form.
+      ``input_reference[]`` and ``input_reference`` are concatenated in
+      that order, so a single ``input_reference[]`` with 3 files becomes
+      ``ref_image_0/1/2``, and mixing the two field names also
+      concatenates left-to-right.
+    * Each value is encoded as a ``data:<mime>;base64,...`` URL using
+      the multipart file's declared ``content_type`` (falling back to
+      ``image/png``). This keeps a single request self-contained — no
+      external upload step is needed.
+    * ``__form_files__`` is removed from the returned dict so it never
+      reaches the upstream whitelist filter (it would be dropped there
+      anyway, but removing it explicitly keeps the upstream body clean).
+    * If the body has no ``__form_files__`` (the JSON path), the input
+      is returned untouched minus the placeholder key.
+    """
+
+    if "__form_files__" not in body:
+        return dict(body)
+
+    out = {k: v for k, v in body.items() if k != "__form_files__"}
+    files = body.get("__form_files__") or []
+    if not isinstance(files, list):
+        return out
+
+    images: list[str] = []
+    for entry in files:
+        if not isinstance(entry, Mapping):
+            continue
+        if entry.get("field") not in _REFERENCE_FILE_FIELDS:
+            continue
+        data = entry.get("data")
+        if not isinstance(data, (bytes, bytearray)) or not data:
+            continue
+        mime = (entry.get("content_type") or "image/png").strip().lower()
+        # Defence in depth: only allow obvious image/* mimes through.
+        if not mime.startswith("image/"):
+            mime = "image/png"
+        encoded = base64.b64encode(bytes(data)).decode("ascii")
+        images.append(f"data:{mime};base64,{encoded}")
+
+    for index, data_url in enumerate(images):
+        out[f"ref_image_{index}"] = data_url
+
+    return out
 
 
 def extract_result_urls(results: Any) -> list[str]:

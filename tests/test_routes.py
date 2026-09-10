@@ -36,6 +36,11 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                     "type": "image",
                     "accept_types": ["image/jpeg", "image/png"],
                 },
+                "ref_image_1": {
+                    "required": False,
+                    "type": "image",
+                    "accept_types": ["image/jpeg", "image/png"],
+                },
                 "resolution": {
                     "required": False,
                     "type": "enum",
@@ -434,6 +439,137 @@ async def test_create_video_bad_json(client):
         content=b"not json",
     )
     assert r.status_code == 400
+
+
+# ---------------------------------------------------------------- multipart / reference upload
+
+
+async def test_create_video_multipart_uploads_ref_image_0(client):
+    """A multipart POST that includes `input_reference[]` must turn
+    the file bytes into `ref_image_0` on the upstream body, so the
+    AutoDL workflow actually receives the image."""
+
+    import base64
+
+    png_bytes = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+        "890000000d49444154789c6300010000000500010d0a2db40000000049454e44ae"
+        "426082"
+    )
+    r = await client.post(
+        "/v1/videos",
+        headers={"Authorization": "Bearer raw-token"},
+        data={
+            "model": "wf-aaa",
+            "prompt": "animate this",
+            "seconds": "6",
+            "size": "720x1280",
+        },
+        files={
+            "input_reference[]": ("image-image-1.png", png_bytes, "image/png"),
+        },
+    )
+    assert r.status_code == 202, r.text
+
+    submit = next(
+        c for c in UPSTREAM_CALLS
+        if c[0] == "POST"
+        and "/comfyui_workflow/wf-aaa" in c[1]
+        and c[2] and c[2].get("prompt") == "animate this"
+    )
+    body = submit[2]
+    assert body["prompt"] == "animate this"
+    assert body["duration"] == 6
+    # The crucial assertion: the upstream body contains ref_image_0
+    # as a data URL whose payload decodes back to the original PNG.
+    assert "ref_image_0" in body
+    assert body["ref_image_0"].startswith("data:image/png;base64,")
+    encoded = body["ref_image_0"].split(",", 1)[1]
+    assert base64.b64decode(encoded) == png_bytes
+
+
+async def test_create_video_multipart_two_refs_become_ref_image_0_and_1(client):
+    """Multiple `input_reference[]` files → ref_image_0, ref_image_1, ...,
+    preserving multipart order."""
+
+    import base64
+
+    png_a = b"\x89PNG\r\n\x1a\n" + b"first"
+    png_b = b"\x89PNG\r\n\x1a\n" + b"second"
+
+    # httpx's `files=` dict only sends one file per field name, but a
+    # browser using `<input type="file" name="input_reference[]" multiple>`
+    # sends N parts with the SAME field name. Build the multipart body
+    # by hand to mimic that.
+    boundary = "TestBoundaryManyRefs"
+    crlf = b"\r\n"
+    parts: list[bytes] = []
+    parts.append(b"--" + boundary.encode() + crlf)
+    parts.append(b'Content-Disposition: form-data; name="model"' + crlf + crlf)
+    parts.append(b"wf-aaa" + crlf)
+    parts.append(b"--" + boundary.encode() + crlf)
+    parts.append(b'Content-Disposition: form-data; name="prompt"' + crlf + crlf)
+    parts.append(b"two-refs" + crlf)
+    parts.append(b"--" + boundary.encode() + crlf)
+    parts.append(b'Content-Disposition: form-data; name="size"' + crlf + crlf)
+    parts.append("480p横".encode("utf-8") + crlf)
+    for fname, payload, mime in [("a.png", png_a, "image/png"), ("b.jpg", png_b, "image/jpeg")]:
+        parts.append(b"--" + boundary.encode() + crlf)
+        parts.append(
+            f'Content-Disposition: form-data; name="input_reference[]"; filename="{fname}"'.encode()
+            + crlf
+        )
+        parts.append(f"Content-Type: {mime}".encode() + crlf + crlf)
+        parts.append(payload + crlf)
+    parts.append(b"--" + boundary.encode() + b"--" + crlf)
+    body_bytes = b"".join(parts)
+
+    r = await client.post(
+        "/v1/videos",
+        headers={
+            "Authorization": "Bearer raw-token",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+        content=body_bytes,
+    )
+    assert r.status_code == 202, r.text
+
+    submit = next(
+        c for c in UPSTREAM_CALLS
+        if c[0] == "POST"
+        and "/comfyui_workflow/wf-aaa" in c[1]
+        and c[2] and c[2].get("prompt") == "two-refs"
+    )
+    body = submit[2]
+    assert "ref_image_0" in body and "ref_image_1" in body
+    assert body["ref_image_0"].startswith("data:image/png;base64,")
+    assert body["ref_image_1"].startswith("data:image/jpeg;base64,")
+    assert base64.b64decode(body["ref_image_0"].split(",", 1)[1]) == png_a
+    assert base64.b64decode(body["ref_image_1"].split(",", 1)[1]) == png_b
+
+
+async def test_create_video_multipart_no_reference_still_submits(client):
+    """A multipart POST with no reference files still works — the
+    workflow just runs without ref_image_0 (and would be rejected by
+    AutoDL only if ref_image_0 is required and missing; that's an
+    upstream error, not a gateway bug)."""
+
+    r = await client.post(
+        "/v1/videos",
+        headers={"Authorization": "Bearer raw-token"},
+        data={
+            "model": "wf-bbb",  # no ref_image_0 declared
+            "prompt": "no-refs",
+        },
+    )
+    assert r.status_code == 202
+    submit = next(
+        c for c in UPSTREAM_CALLS
+        if c[0] == "POST"
+        and "/comfyui_workflow/wf-bbb" in c[1]
+        and c[2] and c[2].get("prompt") == "no-refs"
+    )
+    assert "ref_image_0" not in submit[2]
 
 
 # ---------------------------------------------------------------- retrieve

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import time
@@ -16,6 +17,7 @@ from .errors import InvalidRequest, NotReadyError, UpstreamError
 from .mapping import (
     build_upstream_body,
     coerce_field_types,
+    expand_multipart_files,
     extract_result_urls,
     map_size_to_resolution,
     video_object,
@@ -92,15 +94,17 @@ async def _parse_request_body(request: Request) -> dict:
     Some OpenAI-compatible frontends (e.g. browser canvas apps) POST
     video-generation requests as multipart/form-data instead of JSON.
     We accept both: JSON is authoritative, form fields are flattened to
-    a dict (last value wins). Uploaded files are left for the caller to
-    handle (they map to reference images).
+    a dict (last value wins). Uploaded files are stashed in a synthetic
+    ``__form_files__`` list so :func:`expand_multipart_files` can turn
+    them into ``ref_image_<N>`` data URLs for the upstream workflow.
     """
 
     content_type = (request.headers.get("content-type") or "").lower()
 
     if "application/json" in content_type:
+        raw = await request.body()
         try:
-            body = await request.json()
+            body = json.loads(raw) if raw else {}
         except ValueError as exc:
             raise InvalidRequest("Request body must be valid JSON") from exc
         if not isinstance(body, dict):
@@ -117,11 +121,33 @@ async def _parse_request_body(request: Request) -> dict:
             )
             raise InvalidRequest("Could not parse form body") from exc
         body: dict = {}
+        form_files: list[dict] = []
         for key, value in form.multi_items():
             if isinstance(value, str):
                 body[key] = value  # duplicate keys: last one wins
-            # UploadFile values are skipped here; reference images are
-            # handled separately once we know the exact field names.
+            else:
+                # UploadFile-like object. Read the bytes eagerly while
+                # the form stream is still open; the form is closed
+                # when this coroutine returns.
+                try:
+                    data = await value.read()
+                except Exception as exc:
+                    logger.warning(
+                        "form file read failed",
+                        extra={"field": key, "error": str(exc)},
+                    )
+                    continue
+                form_files.append(
+                    {
+                        "field": key,
+                        "filename": getattr(value, "filename", None),
+                        "content_type": getattr(value, "content_type", None),
+                        "size": len(data),
+                        "data": data,
+                    }
+                )
+        if form_files:
+            body["__form_files__"] = form_files
         return body
 
     raw = await request.body()
@@ -143,6 +169,12 @@ async def create_video(request: Request) -> JSONResponse:
     await _ensure_cache_warm(request, token)
 
     body = await _parse_request_body(request)
+
+    # Multipart uploads carry reference images as file fields; turn
+    # those into the upstream workflow's ``ref_image_<N>`` data URLs
+    # *before* we build the upstream body, so the whitelist filter
+    # below sees them as ordinary top-level fields.
+    body = expand_multipart_files(body)
 
     model = body.get("model")
     if not isinstance(model, str) or not model.strip():
