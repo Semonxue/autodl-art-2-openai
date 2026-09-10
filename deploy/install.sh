@@ -2,13 +2,13 @@
 # One-shot installer for the autodl-openai-gateway on a small Linux VPS.
 # Run as a regular user with sudo access; the script will sudo internally.
 #
-#   bash deploy/install.sh                    # install to /opt/autodl-openai-gateway, port 8000
+#   bash deploy/install.sh                    # install to /opt/autodl-openai-gateway, port 8765
 #   GATEWAY_PORT=9000 bash deploy/install.sh  # listen on :9000 instead
 #
 # Recognized env vars (all optional):
 #   INSTALL_DIR        target dir (default /opt/autodl-openai-gateway)
 #   SERVICE_NAME       systemd unit name (default autodl-openai-gateway)
-#   GATEWAY_PORT       port the app listens on (default 8000)
+#   GATEWAY_PORT       port the app listens on (default 8765)
 #   GATEWAY_HOST       bind address (default 0.0.0.0)
 #   AUTODL_BASE_URL    upstream base URL
 #   AUTODL_BOOTSTRAP_TOKEN  token used to seed the workflow cache at startup
@@ -93,8 +93,8 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now "$SERVICE_NAME"
 
 echo "==> Verifying"
-# Use the port we *actually* configured, falling back to 8000 if unset.
-VERIFY_PORT="${GATEWAY_PORT:-8000}"
+# Use the port we *actually* configured, falling back to 8765 if unset.
+VERIFY_PORT="${GATEWAY_PORT:-8765}"
 sleep 1
 if curl -fsS "http://127.0.0.1:${VERIFY_PORT}/healthz" >/dev/null; then
     echo "==> OK: gateway is responding on :${VERIFY_PORT}"

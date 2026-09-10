@@ -41,7 +41,7 @@ class Settings:
 
     # --- server
     gateway_host: str = "0.0.0.0"
-    gateway_port: int = 8000
+    gateway_port: int = 8765
     log_level: str = "INFO"
 
     # --- upstream
@@ -84,7 +84,7 @@ class Settings:
 def load_settings() -> Settings:
     return Settings(
         gateway_host=_env("GATEWAY_HOST", "0.0.0.0"),
-        gateway_port=_env_int("GATEWAY_PORT", 8000),
+        gateway_port=_env_int("GATEWAY_PORT", 8765),
         log_level=_env("LOG_LEVEL", "INFO").upper(),
         upstream_base_url=_env(
             "AUTODL_BASE_URL", "https://www.autodl.art/api/v1/comfyui"

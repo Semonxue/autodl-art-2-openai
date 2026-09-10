@@ -2,13 +2,13 @@
 # End-to-end smoke check against a running gateway instance.
 #
 # Usage:
-#   AUTODL_TOKEN=... BASE_URL=http://127.0.0.1:8000/v1 bash scripts/smoke.sh
+#   AUTODL_TOKEN=... BASE_URL=http://127.0.0.1:8765/v1 bash scripts/smoke.sh
 #
 # Exits 0 on success, non-zero on any unexpected response.
 
 set -euo pipefail
 
-BASE_URL="${BASE_URL:-http://127.0.0.1:8000/v1}"
+BASE_URL="${BASE_URL:-http://127.0.0.1:8765/v1}"
 TOKEN="${AUTODL_TOKEN:?AUTODL_TOKEN must be set}"
 
 red()    { printf "\033[31m%s\033[0m\n" "$*"; }

@@ -100,7 +100,7 @@ required to start; everything optional.
 | Variable                  | Default                                      | Purpose                          |
 |---------------------------|----------------------------------------------|----------------------------------|
 | `GATEWAY_HOST`            | `0.0.0.0`                                    | uvicorn listen address           |
-| `GATEWAY_PORT`            | `8000`                                       | uvicorn listen port              |
+| `GATEWAY_PORT`            | `8765`                                       | uvicorn listen port              |
 | `LOG_LEVEL`               | `INFO`                                       | root logger level                |
 | `AUTODL_BASE_URL`         | `https://www.autodl.art/api/v1/comfyui`      | upstream base URL                |
 | `AUTODL_BOOTSTRAP_TOKEN`  | unset                                        | optional token for startup sync  |
@@ -126,7 +126,7 @@ The shortest path from a clean checkout to a running gateway:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python -m app                       # binds 0.0.0.0:8000
+python -m app                       # binds 0.0.0.0:8765
 ```
 
 Override anything via environment variables, e.g.:
@@ -141,7 +141,7 @@ python -m app
 Smoke test the deployment:
 
 ```bash
-curl -sS http://localhost:8000/healthz
+curl -sS http://localhost:8765/healthz
 # {"status":"ok"}
 ```
 
@@ -155,12 +155,12 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-python -m app                 # binds 0.0.0.0:8000
+python -m app                 # binds 0.0.0.0:8765
 # or, when you want uvicorn's own reload + access log:
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --reload
+uvicorn app.main:app --host 0.0.0.0 --port 8765 --workers 1 --reload
 ```
 
-Then point any OpenAI-style client at `http://localhost:8000/v1` with
+Then point any OpenAI-style client at `http://localhost:8765/v1` with
 your AutoDL token as the API key.
 
 ## Running the test suite
@@ -190,7 +190,7 @@ and prints the picked workflow id + task id.
 # On the VPS, as a sudo-enabled user:
 git clone <repo> autodlart2openai
 cd autodlart2openai
-bash deploy/install.sh           # default: listens on 0.0.0.0:8000
+bash deploy/install.sh           # default: listens on 0.0.0.0:8765
 ```
 
 The installer:
@@ -203,7 +203,7 @@ The installer:
 
 ### Configuring the port
 
-The gateway reads `GATEWAY_PORT` (default `8000`) and `GATEWAY_HOST`
+The gateway reads `GATEWAY_PORT` (default `8765`) and `GATEWAY_HOST`
 (default `0.0.0.0`) at startup. Pick one of two ways to change them:
 
 **A. Pass them when you install** — the installer writes the value into
@@ -242,19 +242,19 @@ curl -sS http://127.0.0.1:9000/healthz
 
 ### Exposing the gateway to the internet
 
-After install, the gateway binds `0.0.0.0:8000` (or whatever
+After install, the gateway binds `0.0.0.0:8765` (or whatever
 `GATEWAY_PORT` is). To reach it from outside the VPS:
 
 **1. Firewall — open the port to the world (or just to your IP)**
 
 ```bash
 # UFW (Ubuntu/Debian)
-sudo ufw allow 8000/tcp                       # open to everyone
-sudo ufw allow from 1.2.3.4 to any port 8000  # open to one IP only (safer)
+sudo ufw allow 8765/tcp                       # open to everyone
+sudo ufw allow from 1.2.3.4 to any port 8765  # open to one IP only (safer)
 sudo ufw reload
 
 # firewalld (CentOS / RHEL / Fedora)
-sudo firewall-cmd --permanent --add-port=8000/tcp
+sudo firewall-cmd --permanent --add-port=8765/tcp
 sudo firewall-cmd --reload
 ```
 
@@ -272,7 +272,7 @@ VPS works.
 Once the port is open, the gateway's OpenAI-compatible base URL is:
 
 ```
-http://<server-public-ip>:8000/v1
+http://<server-public-ip>:8765/v1
 ```
 
 Wire any OpenAI-style client to it:
@@ -281,7 +281,7 @@ Wire any OpenAI-style client to it:
 # Python — openai SDK
 from openai import OpenAI
 client = OpenAI(
-    base_url="http://203.0.113.10:8000/v1",
+    base_url="http://203.0.113.10:8765/v1",
     api_key="<your-autodl-comfyui-token>",  # passed through verbatim
 )
 resp = client.videos.generate(model="<any-workflow-id>", prompt="...")
@@ -289,7 +289,7 @@ resp = client.videos.generate(model="<any-workflow-id>", prompt="...")
 
 ```bash
 # curl
-curl -X POST http://203.0.113.10:8000/v1/videos \
+curl -X POST http://203.0.113.10:8765/v1/videos \
   -H "Authorization: Bearer <your-autodl-comfyui-token>" \
   -H "Content-Type: application/json" \
   -d '{"model":"<workflow-id>","prompt":"a cat in space","size":"480x480"}'
@@ -302,7 +302,7 @@ Caddyfile (Caddy issues + renews the cert for you):
 
 ```caddyfile
 autodl.example.com {
-    reverse_proxy 127.0.0.1:8000
+    reverse_proxy 127.0.0.1:8765
 }
 ```
 
@@ -319,7 +319,7 @@ sudo systemctl restart autodl-openai-gateway
 
 # What port is it actually on right now?
 sudo systemctl show autodl-openai-gateway -p Environment | tr ' ' '\n' | grep GATEWAY_
-ss -ltnp | grep ':8000'   # or whatever GATEWAY_PORT is
+ss -ltnp | grep ':8765'   # or whatever GATEWAY_PORT is
 ```
 
 ## Running on a cloud server (keep it alive)
