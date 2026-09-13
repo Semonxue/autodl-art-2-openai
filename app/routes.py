@@ -20,6 +20,7 @@ from .mapping import (
     expand_multipart_files,
     extract_result_urls,
     map_size_to_resolution,
+    summarize_upstream_response,
     video_object,
 )
 from .upstream import UpstreamClient
@@ -42,6 +43,26 @@ def _random_seed() -> int:
     """Return a random seed within AutoDL's declared integer range."""
 
     return random.randint(1, 999_999_999_999_999)
+
+
+def _log_upstream(
+    request: Request, payload: Any, *, endpoint: str
+) -> None:
+    """Emit a one-line DEBUG digest of an upstream AutoDL response.
+
+    Controlled by ``settings.log_upstream_responses`` — off by default
+    to keep normal logs quiet; turn on with the ``LOG_UPSTREAM_RESPONSES=1``
+    environment variable when you need to diagnose "did AutoDL get the
+    request right / what did it reply?". The digest never contains
+    base64 or other large values (see :func:`summarize_upstream_response`).
+    """
+
+    settings = request.app.state.settings
+    if not getattr(settings, "log_upstream_responses", False):
+        return
+    summary = summarize_upstream_response(payload, endpoint=endpoint)
+    summary["path"] = request.url.path
+    logger.debug("upstream_response", extra=summary)
 
 
 async def _ensure_cache_warm(request: Request, token: str) -> None:
@@ -229,6 +250,7 @@ async def create_video(request: Request) -> JSONResponse:
         upstream_body,
         timeout=request.app.state.settings.timeout_submit,
     )
+    _log_upstream(request, submitted, endpoint="submit")
 
     task_id = str(submitted.get("task_id", "")).strip()
     if not task_id:
@@ -251,6 +273,7 @@ async def create_video(request: Request) -> JSONResponse:
 async def retrieve_video(request: Request, video_id: str) -> JSONResponse:
     token = extract_bearer_token(request)
     upstream = await _upstream(request).get_result(token, video_id)
+    _log_upstream(request, upstream, endpoint="retrieve")
 
     model = upstream.get("model")
     return JSONResponse(
@@ -267,6 +290,7 @@ async def retrieve_video(request: Request, video_id: str) -> JSONResponse:
 async def video_content(request: Request, video_id: str):
     token = extract_bearer_token(request)
     upstream = await _upstream(request).get_result(token, video_id)
+    _log_upstream(request, upstream, endpoint="video_content")
     urls = extract_result_urls(upstream.get("results"))
     if not urls:
         raise NotReadyError("Task has no downloadable result yet")

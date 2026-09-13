@@ -125,6 +125,7 @@ curl -X POST http://<your-server-ip>:8765/v1/videos \
 | `CORS_ORIGINS` | `*` | 允许的来源，逗号分隔 |
 | `LOG_FILE` | `logs/gateway.log` | 滚动日志；空串=只走 stderr |
 | `LOG_MAX_BYTES` / `LOG_BACKUP_COUNT` | `10485760` / `5` | 滚动策略 |
+| `LOG_UPSTREAM_RESPONSES` | `0` | `1` 记录每次上游响应的摘要（task_id / status / progress / 结果 URL / 顶层 key 名），DEBUG 级；不含 base64 |
 
 工作流 schema 缓存在内存中，启动期（设了 `AUTODL_BOOTSTRAP_TOKEN` 时）或首次请求时
 单飞同步一次。**不落盘、不后台刷新**——重启即重拉。
@@ -211,6 +212,52 @@ autodl.example.com {
 ```
 
 **绝不打**请求体、token、cookie；上游 URL 在错误日志里会被截断。
+
+## 升级
+
+安装脚本是**幂等**的：默认行为是先把正在跑的服务**停掉**，再 rsync 最新代码、重装
+依赖、重写 env、再由 `systemctl enable --now` 重新拉起来。整个流程是一次干净的
+# stop → swap → start 序列，避免 rsync 覆盖运行中进程导致的 `ImportError`。
+
+升级流程（在 VPS 上）：
+
+```bash
+# 1) 进入安装目录（默认 /opt/autodl-openai-gateway）
+cd /opt/autodl-openai-gateway
+
+# 2) 拉取最新代码（如果安装时是 git clone 出来的仓库）
+git pull
+
+# 3) 用你当初安装时的同一组环境变量重跑 install.sh。
+#    安装脚本只会改：
+#      - 项目文件（rsync 覆盖）
+#      - .venv 依赖（pip install -U）
+#      - /etc/autodl-openai-gateway.env（按当前 shell 环境重写）
+#      - systemd unit（重写并 restart）
+#    不会动你 VPS 上的其他东西。
+sudo bash deploy/install.sh
+```
+
+跳过停服步骤（高级选项，一般不需要）：
+
+```bash
+# 让旧服务在 rsync 期间继续运行——只在你明确知道不会有 ImportError
+# 风险时才用，例如只改了 README / 加了注释的情况。
+STOP_FIRST=0 sudo bash deploy/install.sh
+```
+
+> 如果你后来手动改过 `/etc/autodl-openai-gateway.env`（比如调超时、改端口、加
+> `LOG_UPSTREAM_RESPONSES=1`），请先把需要的键值**导回当前 shell** 再跑 install.sh，
+> 否则会被覆盖。或者把脚本里那段 `KNOWN_KEYS` 视为权威清单——它现在覆盖了
+> `app/settings.py` 里所有可配置项。
+
+降级到上一个版本：
+
+```bash
+cd /opt/autodl-openai-gateway
+git checkout <旧 commit / tag>
+sudo bash deploy/install.sh
+```
 
 日常命令：
 

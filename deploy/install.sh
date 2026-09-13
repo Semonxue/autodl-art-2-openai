@@ -15,13 +15,21 @@
 #   CORS_ORIGINS       comma-separated allowed origins (default *)
 #   LOG_FILE           log file path (default logs/gateway.log; "" = stderr only)
 #   LOG_LEVEL          root logger level (default INFO)
+#   LOG_UPSTREAM_RESPONSES  set to 1 to log a DEBUG digest of every AutoDL response
+#   STOP_FIRST         set to 0 to skip the "stop the running service
+#                      before reinstall" step (default 1). Set 0 only if
+#                      you know what you're doing — concurrent rsync over
+#                      a live process can race with code reads.
 #   Any TIMEOUT_* / MAX_* knob from app.settings.Settings is also forwarded.
 #
 # All of these are written to /etc/autodl-openai-gateway.env and read by the
 # systemd unit's EnvironmentFile directive.
 #
-# Re-running is safe: it reinstalls the venv in place, rewrites the env file,
-# and re-enables the systemd unit.
+# Re-running is safe: by default it stops any running instance, reinstalls
+# the venv in place, rewrites the env file, and re-enables the systemd
+# unit. Set STOP_FIRST=0 to keep the old service running while files are
+# being swapped (only useful for hot-reload-style workflows; usually you
+# want the default).
 
 set -euo pipefail
 
@@ -38,6 +46,30 @@ fi
 if ! command -v systemctl >/dev/null 2>&1; then
     echo "systemctl is required (this installer targets systemd hosts)" >&2
     exit 1
+fi
+
+# Stop the existing service (if any) before we start swapping code underneath
+# it. rsync on a live Python process can race with .pyc writes and cause
+# ImportError on the next restart. STOP_FIRST=0 opts out of this safety net.
+STOP_FIRST="${STOP_FIRST:-1}"
+if [ "$STOP_FIRST" = "1" ]; then
+    # `systemctl is-active` exits 0 when running, 3 when inactive, 4 when
+    # the unit is not loaded. Catch the "not installed yet" case so this
+    # works for fresh installs too.
+    if sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        echo "==> Stopping existing $SERVICE_NAME service"
+        # TimeoutStopSec=15 in the unit caps how long this can wait.
+        sudo systemctl stop "$SERVICE_NAME"
+    elif sudo systemctl list-unit-files "$SERVICE_NAME.service" 2>/dev/null \
+            | grep -q "^$SERVICE_NAME.service"; then
+        # Unit is known to systemd but inactive — nothing to stop, but log
+        # it so the user sees we're aware of the prior install.
+        echo "==> $SERVICE_NAME is installed but inactive; no stop needed"
+    else
+        echo "==> No existing $SERVICE_NAME unit; nothing to stop"
+    fi
+else
+    echo "==> STOP_FIRST=0: leaving the running service untouched during install"
 fi
 
 echo "==> Installing into $INSTALL_DIR"
@@ -64,7 +96,7 @@ echo "==> Writing environment file to $ENV_FILE"
 # gateway actually understands. This keeps secrets like AWS_* etc. from
 # leaking into the service.
 declare -a KNOWN_KEYS=(
-    GATEWAY_HOST GATEWAY_PORT LOG_LEVEL LOG_FILE LOG_MAX_BYTES LOG_BACKUP_COUNT
+    GATEWAY_HOST GATEWAY_PORT LOG_LEVEL LOG_FILE LOG_MAX_BYTES LOG_BACKUP_COUNT LOG_UPSTREAM_RESPONSES
     AUTODL_BASE_URL AUTODL_BOOTSTRAP_TOKEN
     TIMEOUT_CONNECT TIMEOUT_READ TIMEOUT_SUBMIT TIMEOUT_WRITE TIMEOUT_POOL
     MAX_CONNECTIONS MAX_KEEPALIVE KEEPALIVE_EXPIRY

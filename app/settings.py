@@ -67,6 +67,13 @@ class Settings:
     log_file: str = "logs/gateway.log"
     log_max_bytes: int = 10 * 1024 * 1024  # 10 MB per file
     log_backup_count: int = 5
+    # When set to ``1`` (or ``true`` / ``yes``), every upstream AutoDL
+    # response is summarised and logged at ``DEBUG`` level — task_id,
+    # status, progress, result count and result URLs. The full body
+    # (which may contain base64 thumbnails) is never logged. Off by
+    # default to keep noise down; turn on for diagnosing "the gateway
+    # forwarded it correctly, what did AutoDL do?" scenarios.
+    log_upstream_responses: bool = False
 
     # --- httpx timeouts (seconds)
     timeout_connect: float = 5.0
@@ -96,6 +103,8 @@ def load_settings() -> Settings:
         log_file=_env("LOG_FILE", "logs/gateway.log"),
         log_max_bytes=_env_int("LOG_MAX_BYTES", 10 * 1024 * 1024),
         log_backup_count=_env_int("LOG_BACKUP_COUNT", 5),
+        log_upstream_responses=_env("LOG_UPSTREAM_RESPONSES", "0").lower()
+        in {"1", "true", "yes"},
         timeout_connect=_env_float("TIMEOUT_CONNECT", 5.0),
         timeout_read=_env_float("TIMEOUT_READ", 30.0),
         timeout_submit=_env_float("TIMEOUT_SUBMIT", 60.0),

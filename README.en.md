@@ -136,6 +136,7 @@ Everything is an environment variable with a sane default. **Nothing is required
 | `CORS_ORIGINS` | `*` | comma-separated allowed origins |
 | `LOG_FILE` | `logs/gateway.log` | rotating log file ("" = stderr only) |
 | `LOG_MAX_BYTES` / `LOG_BACKUP_COUNT` | `10485760` / `5` | rotation policy |
+| `LOG_UPSTREAM_RESPONSES` | `0` | set to `1` to log a DEBUG-level digest of every upstream AutoDL response (task_id / status / progress / result URLs / top-level key names) — never the full body, never base64 |
 
 The workflow schema cache lives in memory and is single-flight-synced once
 at startup (when `AUTODL_BOOTSTRAP_TOKEN` is set) or on the first request.
@@ -231,6 +232,56 @@ systemd) and a rotating file at `logs/gateway.log`:
 
 **Never logged**: request bodies, tokens, cookies. Upstream URLs are truncated
 in error lines.
+
+## Upgrading
+
+The installer is **idempotent**. By default it runs a clean
+**stop → swap → start** sequence:
+
+1. `systemctl stop` the running service (if any)
+2. rsync the new project files over the install dir
+3. rebuild the venv and `pip install -U` the dependencies
+4. rewrite `/etc/autodl-openai-gateway.env` from your current shell
+5. `systemctl enable --now` brings the service back up
+
+This avoids rsync clobbering a live Python process and causing
+`ImportError` on the next restart.
+
+To upgrade (run on the VPS):
+
+```bash
+# 1) Enter the install dir (default /opt/autodl-openai-gateway)
+cd /opt/autodl-openai-gateway
+
+# 2) Pull the latest code (only if you originally git-cloned the repo)
+git pull
+
+# 3) Re-run install.sh with the same env vars you used the first time
+sudo bash deploy/install.sh
+```
+
+To skip the stop step (advanced — usually you do NOT want this):
+
+```bash
+# Keep the old service running across the file swap. Use only when
+# you know no module-level imports change (e.g. README-only commits).
+STOP_FIRST=0 sudo bash deploy/install.sh
+```
+
+> If you've hand-edited `/etc/autodl-openai-gateway.env` since installing
+> (timeouts, port, `LOG_UPSTREAM_RESPONSES=1`, etc.), re-export the keys
+> you want to keep into your shell before re-running the installer —
+> otherwise they will be overwritten. The `KNOWN_KEYS` list at the top
+> of `deploy/install.sh` is the authoritative whitelist of every key
+> the gateway understands.
+
+To roll back to a previous version:
+
+```bash
+cd /opt/autodl-openai-gateway
+git checkout <old commit or tag>
+sudo bash deploy/install.sh
+```
 
 Day-to-day:
 
